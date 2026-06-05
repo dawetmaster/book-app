@@ -1,0 +1,123 @@
+---
+- name: Deploy Stack Book Tracker App dengan Docker Compose
+  hosts: webservers
+  become: true
+  vars:
+    # Menggunakan variabel direktori dari inventory, atau default ke /opt/book-tracker
+    dest_dir: "{{ app_dir | default('/opt/book-tracker') }}"
+
+  tasks:
+    # ==========================================
+    # BAGIAN 1: INSTALASI PRASYARAT & DOCKER
+    # ==========================================
+
+    - name: Perbarui cache apt dan instal paket prasyarat sistem
+      apt:
+        update_cache: yes
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - rsync
+        state: present
+
+    - name: Buat direktori keyrings untuk GPG key Docker
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Tambahkan GPG key resmi Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+        keyring: /etc/apt/keyrings/docker.gpg
+
+    - name: Tambahkan repositori resmi Docker ke sources list
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Instal Docker Engine dan plugin Docker Compose
+      apt:
+        update_cache: yes
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Pastikan layanan Docker telah berjalan dan aktif saat boot
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ==========================================
+    # BAGIAN 2: PERSIAPAN STRUKTUR DIREKTORI & TRANSFER FILE
+    # ==========================================
+
+    - name: Buat direktori utama aplikasi di server target
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      loop:
+        - "{{ dest_dir }}"
+        - "{{ dest_dir }}/backend"
+        - "{{ dest_dir }}/frontend"
+        - "{{ dest_dir }}/monitoring"
+        - "{{ dest_dir }}/monitoring/grafana"
+
+    - name: Salin file konfigurasi docker-compose.yml ke server target
+      copy:
+        src: ./docker-compose.yml
+        dest: "{{ dest_dir }}/docker-compose.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Salin file environment (.env) untuk masing-masing service
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ dest_dir }}/{{ item.dest }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+      loop:
+        - { src: './be.env', dest: 'be.env' }
+        - { src: './db.env', dest: 'db.env' }
+        - { src: './fe.env', dest: 'fe.env' }
+
+    - name: Sinkronisasi direktori kode sumber aplikasi menggunakan rsync
+      synchronize:
+        src: "{{ item.src }}"
+        dest: "{{ dest_dir }}/{{ item.dest }}"
+        delete: yes
+        recursive: yes
+      loop:
+        - { src: './backend/', dest: 'backend' }
+        - { src: './frontend/', dest: 'frontend' }
+        - { src: './monitoring/', dest: 'monitoring' }
+
+    # ==========================================
+    # BAGIAN 3: MENJALANKAN DOCKER COMPOSE STACK
+    # ==========================================
+
+    - name: Jalankan build dan start kontainer melalui Docker Compose
+      become: false  # Dijalankan sebagai user biasa yang memiliki akses grup docker
+      command:
+        cmd: docker compose up -d --build
+        chdir: "{{ dest_dir }}"
+      register: compose_output
+      changed_when: "'Recreating' in compose_output.stdout or 'Building' in compose_output.stdout"
+
+    - name: Tampilkan output proses deployment Docker Compose
+      debug:
+        var: compose_output.stdout_lines
