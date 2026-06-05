@@ -46,7 +46,7 @@ python setup.py
 | `FLASK_DEBUG` | Enable debug mode | `True` | No |
 | `FLASK_HOST` | Server host address | `0.0.0.0` | No |
 | `FLASK_PORT` | Server port number | `5001` | No |
-| `DATABASE_URL` | Database connection string | `sqlite:///books.db` | No |
+| `DATABASE_URL` | Database connection string | `postgresql://bookuser:bookpass@db:5432/bookdb` | No |
 | `CORS_ORIGINS` | Allowed CORS origins (comma-separated) | `http://localhost:8080,http://localhost:5173` | No |
 | `SECRET_KEY` | Flask secret key | `dev-secret-key...` | **Yes** |
 | `API_PREFIX` | API URL prefix | `/api` | No |

@@ -1,10 +1,9 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
 import os
 from dotenv import load_dotenv
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import create_engine, text, Column, Integer, String, Numeric
+from sqlalchemy.orm import DeclarativeBase, Session
 from prometheus_flask_exporter import PrometheusMetrics
 
 # Load environment variables
@@ -34,37 +33,43 @@ CORS(
     supports_credentials=True,
 )
 
-# ─── DB helpers ───────────────────────────────────────────────────────────────
+# ─── SQLAlchemy setup ─────────────────────────────────────────────────────────
 
-def get_conn():
-    return psycopg2.connect(DATABASE_URL)
-
-
-def init_db():
-    """Create the books table if it doesn't exist."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS books (
-                    id      SERIAL PRIMARY KEY,
-                    title   TEXT NOT NULL,
-                    author  TEXT NOT NULL,
-                    cover   TEXT DEFAULT '',
-                    rating  NUMERIC(3,1) DEFAULT 0,
-                    pages   INTEGER DEFAULT 0,
-                    genre   TEXT DEFAULT '',
-                    status  TEXT DEFAULT 'want-to-read',
-                    created_at TIMESTAMPTZ DEFAULT now()
-                );
-                """
-            )
-        conn.commit()
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 
-# Run once at startup
+class Base(DeclarativeBase):
+    pass
+
+
+class Book(Base):
+    __tablename__ = "books"
+
+    id     = Column(Integer, primary_key=True, autoincrement=True)
+    title  = Column(String, nullable=False)
+    author = Column(String, nullable=False)
+    cover  = Column(String, default="")
+    rating = Column(Numeric(3, 1), default=0)
+    pages  = Column(Integer, default=0)
+    genre  = Column(String, default="")
+    status = Column(String, default="want-to-read")
+
+    def to_dict(self):
+        return {
+            "id":     self.id,
+            "title":  self.title,
+            "author": self.author,
+            "cover":  self.cover,
+            "rating": float(self.rating) if self.rating is not None else 0,
+            "pages":  self.pages,
+            "genre":  self.genre,
+            "status": self.status,
+        }
+
+
+# Create tables at startup
 with app.app_context():
-    init_db()
+    Base.metadata.create_all(engine)
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -72,9 +77,8 @@ with app.app_context():
 @app.route("/api/health", methods=["GET"])
 def health():
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
         return jsonify({"status": "ok", "db": "reachable"}), 200
     except Exception as e:
         return jsonify({"status": "error", "db": str(e)}), 503
@@ -89,37 +93,28 @@ def test_cors():
 def get_books():
     if request.method == "OPTIONS":
         return _cors_preflight()
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM books ORDER BY id")
-            books = cur.fetchall()
-    return jsonify([dict(b) for b in books])
+    with Session(engine) as session:
+        books = session.query(Book).order_by(Book.id).all()
+    return jsonify([b.to_dict() for b in books])
 
 
 @app.route("/api/books", methods=["POST"])
 def add_book():
     data = request.json
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                INSERT INTO books (title, author, cover, rating, pages, genre, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING *
-                """,
-                (
-                    data.get("title"),
-                    data.get("author"),
-                    data.get("cover", ""),
-                    data.get("rating", 0),
-                    data.get("pages", 0),
-                    data.get("genre", ""),
-                    data.get("status", "want-to-read"),
-                ),
-            )
-            book = dict(cur.fetchone())
-        conn.commit()
-    return jsonify(book), 201
+    book = Book(
+        title=data.get("title"),
+        author=data.get("author"),
+        cover=data.get("cover", ""),
+        rating=data.get("rating", 0),
+        pages=data.get("pages", 0),
+        genre=data.get("genre", ""),
+        status=data.get("status", "want-to-read"),
+    )
+    with Session(engine) as session:
+        session.add(book)
+        session.commit()
+        session.refresh(book)
+        return jsonify(book.to_dict()), 201
 
 
 @app.route("/api/books/<int:book_id>", methods=["PUT", "OPTIONS"])
@@ -127,49 +122,27 @@ def update_book(book_id):
     if request.method == "OPTIONS":
         return _cors_preflight()
     data = request.json
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                UPDATE books
-                SET title  = COALESCE(%s, title),
-                    author = COALESCE(%s, author),
-                    cover  = COALESCE(%s, cover),
-                    rating = COALESCE(%s, rating),
-                    pages  = COALESCE(%s, pages),
-                    genre  = COALESCE(%s, genre),
-                    status = COALESCE(%s, status)
-                WHERE id = %s
-                RETURNING *
-                """,
-                (
-                    data.get("title"),
-                    data.get("author"),
-                    data.get("cover"),
-                    data.get("rating"),
-                    data.get("pages"),
-                    data.get("genre"),
-                    data.get("status"),
-                    book_id,
-                ),
-            )
-            book = cur.fetchone()
-        conn.commit()
-    if book:
-        return jsonify(dict(book))
-    return jsonify({"error": "Book not found"}), 404
+    with Session(engine) as session:
+        book = session.get(Book, book_id)
+        if not book:
+            return jsonify({"error": "Book not found"}), 404
+        for field in ("title", "author", "cover", "rating", "pages", "genre", "status"):
+            if field in data:
+                setattr(book, field, data[field])
+        session.commit()
+        session.refresh(book)
+        return jsonify(book.to_dict())
 
 
 @app.route("/api/books/<int:book_id>", methods=["DELETE"])
 def delete_book(book_id):
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("DELETE FROM books WHERE id = %s RETURNING *", (book_id,))
-            book = cur.fetchone()
-        conn.commit()
-    if book:
-        return jsonify(dict(book))
-    return jsonify({"error": "Book not found"}), 404
+    with Session(engine) as session:
+        book = session.get(Book, book_id)
+        if not book:
+            return jsonify({"error": "Book not found"}), 404
+        session.delete(book)
+        session.commit()
+        return jsonify(book.to_dict())
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
