@@ -1,0 +1,39 @@
+groups:
+  - name: flask-alerts
+    rules:
+      - alert: BackendDown
+        expr: up{job="flask-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Flask backend is down"
+          description: "The Flask backend has been unreachable for more than 1 minute."
+
+      - alert: HighRequestLatency
+        expr: flask_http_request_duration_seconds_bucket{le="0.5",job="flask-backend"} / ignoring(le) flask_http_request_duration_seconds_count < 0.95
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency on backend"
+          description: "Less than 95% of requests completed within 500 ms."
+
+      - alert: HighErrorRate
+        expr: rate(flask_http_request_total{status=~"5.."}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx error rate"
+          description: "More than 0.1 req/s are returning 5xx errors."
+
+  - name: postgres-alerts
+    rules:
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL exporter is down"

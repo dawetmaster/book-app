@@ -3,10 +3,103 @@ services:
     build:
       context: "./frontend"
       dockerfile: "Dockerfile"
+    depends_on:
+      be:
+        condition: service_healthy
     ports:
       - 8080:8080
+    env_file:
+      - fe.env
+    networks:
+      - app-net
   be:
     build:
       context: "./backend"
       dockerfile: "Dockerfile"
-    
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - 5001:5001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    env_file:
+      - be.env
+    networks:
+      - app-net
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - db.env
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookuser -d bookdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - 5432:5432
+    networks:
+      - app-net
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    networks:
+      - app-net
+      - monitoring-net
+  
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring-net
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://bookuser:bookpass@db:5432/bookdb?sslmode=disable"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-net
+      - monitoring-net
+
+volumes:
+  pg-data:
+  prom-data:
+  grafana-data:
+
+networks:
+  app-net:
+  monitoring-net:  

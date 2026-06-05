@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
   default-libmysqlclient-dev \
   build-essential \
   pkg-config \
+  curl \
+  libpq5 \
   cron \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
