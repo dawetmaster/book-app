@@ -1,9 +1,5 @@
 # QA Tasks
 
-> 📋 [Back to Test Instructions](README.md#test-instruction)
-
----
-
 ### 🔹 QA
 - **Create a comprehensive Test Plan** covering both positive and negative test scenarios
 - **Test Environment Options:**

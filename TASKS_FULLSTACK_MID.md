@@ -1,9 +1,5 @@
 # Fullstack Tasks (Mid-Level)
 
-> 📋 [Back to Test Instructions](README.md#test-instruction)
-
----
-
 > **Level**: Mid-Level (2–5 years experience)
 
 ### 🔹 Fullstack Developer
