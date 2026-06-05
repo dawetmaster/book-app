@@ -9,6 +9,4 @@ services:
     build:
       context: "./backend"
       dockerfile: "Dockerfile"
-    ports:
-      - 5001:5001
     
